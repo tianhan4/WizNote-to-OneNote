@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from sys import platform
 from urllib.parse import urlencode
 from zipfile import ZipFile
-
+errorFile = []
 import requests
 from bs4 import BeautifulSoup
 from requests import HTTPError
@@ -25,7 +25,7 @@ AUTH_URL = 'https://login.live.com/oauth20_authorize.srf?' + urlencode({
     'response_type': 'code',
     'client_id': CLIENT_ID,
     'redirect_uri': REDIRECT_URI,
-    'scope': 'wl.signin office.onenote_create'
+    'scope': 'wl.offline_access office.onenote_create'
 })
 OAUTH_URL = 'https://login.live.com/oauth20_token.srf'
 
@@ -47,7 +47,8 @@ def get_data_dir():
             account = input('Input WizNote account: ')
             data_path = LINUX_DATA_PATH.format(account)
         elif platform == 'win32' or platform == 'darwin':
-            data_path = input('Input WizNote dir path of "index.db": ')
+            #data_path = input('Input WizNote dir path of "index.db": ')
+            data_path=r"C:\Users\henrysky\Documents\My Knowledge\Data\tianhan_4@aliyun.com"
         else:
             raise Exception('Unsupported platform')
 
@@ -96,7 +97,7 @@ def get_token(session):
         'redirect_uri': REDIRECT_URI,
     }).json()
 
-    return resp['access_token']
+    return resp['access_token'],resp['refresh_token']
 
 
 def create_notebook(session):
@@ -108,13 +109,27 @@ def create_notebook(session):
     return resp.json()['id']
 
 
-def create_section(session, notebook_id, name):
+def create_section(session, notebook_id, name, group_id):
     print('Creating section: "%s"' % name)
-    resp = session.post(API_BASE + '/notebooks/%s/sections' % notebook_id, json={'name': name})
+    if group_id:
+        resp = session.post(API_BASE + '/sectionGroups/%s/sections' % group_id, json={'name': name})
+    else:
+        resp = session.post(API_BASE + '/notebooks/%s/sections' % notebook_id, json={'name': name})
     resp.raise_for_status()
 
     return resp.json()['id']
 
+
+def create_section_group(session, notebook_id, name, group_id):
+    print('Creating section group: "%s"' % name)
+    if group_id:
+        resp = session.post(API_BASE + '/sectionGroups/%s/sectionGroups' % group_id, json={'name': name})
+    else:
+        resp = session.post(API_BASE + '/notebooks/%s/sectionGroups' % notebook_id, json={'name': name})
+
+    resp.raise_for_status()
+
+    return resp.json()['id']
 
 def get_documents():
     data_path, index_path = get_data_dir()
@@ -198,46 +213,96 @@ def clean_html(data, doc):
 
 
 def upload_doc(session, section_id, data_path, doc):
-    doc_path = get_doc_path(data_path, doc)
+        doc_path = get_doc_path(data_path, doc)
 
-    print('Processing %s%s (%s)' % (doc.location, doc.title, doc.guid))
+        print('Processing %s%s (%s)' % (doc.location, doc.title, doc.guid))
 
-    with ZipFile(doc_path) as zip_file:
-        html_content, src_file_names = clean_html(zip_file.read('index.html'), doc)
+        with ZipFile(doc_path) as zip_file:
+            html_content, src_file_names = clean_html(zip_file.read('index.html'), doc)
 
-        if len(src_file_names) > 5:
-            print('Upload may failed if images more than 5')
+            if len(src_file_names) > 5:
+                print('Upload may failed if images more than 5')
 
-        data_send = {
-            'Presentation': (None, html_content, mimetypes.guess_type('index.html')[0])
-        }
+            data_send = {
+                'Presentation': (None, html_content, mimetypes.guess_type('index.html')[0])
+            }
 
-        for name in src_file_names:
-            data_send[name] = (None, zip_file.read('index_files/' + name), mimetypes.guess_type(name)[0])
+            for name in src_file_names:
+                data_send[name] = (None, zip_file.read('index_files/' + name), mimetypes.guess_type(name)[0])
 
-    resp = session.post(API_BASE + '/sections/%s/pages' % section_id, files=data_send)
-    resp.raise_for_status()
+        resp = session.post(API_BASE + '/sections/%s/pages' % section_id, files=data_send)
+        resp.raise_for_status()
 
 
 def main():
     data_dir, docs = get_documents()
 
     with requests.session() as session:
-        token = get_token(session)
-        session.auth = BearerAuth(token)
+        access_token, refresh_token = get_token(session)
+        session.auth = BearerAuth(access_token)
 
         notebook_id = create_notebook(session)
+        items = list(docs.items())
+        groupDict = dict()
 
-        for location, docs in docs.items():
-            section_name = location.strip('/').replace('/', '-')
-            section_id = create_section(session, notebook_id, section_name)
+        for i in range(len(items)):
+            if i%20 == 0:
+                print("refresh token...")
+                print(access_token, refresh_token)
+                resp = session.post(OAUTH_URL, data={
+                    'grant_type': 'refresh_token',
+                    'client_id': CLIENT_ID,
+                    'client_secret': '',
+                    'redirect_uri': REDIRECT_URI,
+                    'refresh_token': refresh_token,
+                }).json()
+                access_token, refresh_token = resp['access_token'],resp['refresh_token']
+                session.auth = BearerAuth(access_token)
+                print(access_token, refresh_token)
+            try:
+                allName = items[i][0].strip('/')
+                sectionHierarchy = allName.split('/')
+                section_name = sectionHierarchy[-1]
+                group_id = ""
 
-            for doc in docs:
-                upload_doc(session, section_id, data_dir, doc)
+                if len(sectionHierarchy) > 1:
+                    for j in range(1,len(sectionHierarchy)):
+                        group_name = "/".join(sectionHierarchy[:j])
+                        group_id = groupDict.get(group_name)
+                        if group_id is None:
+                            if j>1:
+                                father_group_id = groupDict["/".join(sectionHierarchy[:j-1])]
+                            else:
+                                father_group_id = None
+                            group_id = create_section_group(session, notebook_id, sectionHierarchy[j-1], father_group_id)
+                            groupDict[group_name] = group_id
+                else:
+                    group_id = None
+                print("allName: ", allName)
+                print("sectionHierarchy: ",  sectionHierarchy)
+                print("section_name: ", section_name)
+                if i != len(items)-1 and items[i][0] in items[i+1][0]:
+                    # construct section group
+                    section_group_id = create_section_group(session, notebook_id, section_name, group_id)
+                    unsorted_section_id = create_section(session, notebook_id, "unsorted", section_group_id)
+                    groupDict[allName] = section_group_id
+                    for doc in items[i][1]:
+                        upload_doc(session, unsorted_section_id, data_dir, doc)
+                else:
+                    section_id = create_section(session, notebook_id, section_name, group_id)
+                    for doc in items[i][1]:
+                        upload_doc(session, section_id, data_dir, doc)
+
+            except Exception as e:
+                errorFile.append([doc.location + doc.title, e])
+                print(e)
 
 
 if __name__ == '__main__':
     try:
         main()
+        file = open("errorFiles.txt","w")
+        file.write(str(errorFile))
+        file.close()
     except HTTPError as e:
         print(e.response.json())
