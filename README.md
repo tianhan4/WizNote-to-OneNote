@@ -1,10 +1,11 @@
 # WizNote-to-OneNote
 一个从为知笔记导入数据到 OneNote 的脚本
-修改：
+## 修改：
 1. 解决1小时token有效期的问题
 2. 使用section group解决多级目录问题
 3. 使用unsorted section解决非叶子级笔记问题
 
+## 以下为原readme
 ## 已知问题
 1. OneNote 本身的限制。比如不支持自定义 CSS，文件大小等。（具体请看 [OneNote API](https://dev.onenote.com/docs)）
 2. 不支持加密文档（请先在为知客户端手动解密）
